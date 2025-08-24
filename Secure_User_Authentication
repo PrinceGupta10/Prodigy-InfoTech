@@ -1,0 +1,604 @@
+# ------------------------------
+# Project layout (Spring Boot 3 + JWT)
+# ------------------------------
+# Paste these files into a new Maven project, keeping the indicated paths.
+# Then run: mvn spring-boot:run
+# Test with the curl examples at the bottom.
+
+# ==============================
+# pom.xml
+# ==============================
+<!-- File: pom.xml -->
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>auth-jwt-rbac</artifactId>
+  <version>0.0.1-SNAPSHOT</version>
+  <packaging>jar</packaging>
+  <name>auth-jwt-rbac</name>
+  <description>Secure authentication with JWT + RBAC</description>
+
+  <properties>
+    <java.version>17</java.version>
+    <spring.boot.version>3.3.2</spring.boot.version>
+  </properties>
+
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-dependencies</artifactId>
+        <version>${spring.boot.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-security</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-validation</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.jsonwebtoken</groupId>
+      <artifactId>jjwt-api</artifactId>
+      <version>0.11.5</version>
+    </dependency>
+    <dependency>
+      <groupId>io.jsonwebtoken</groupId>
+      <artifactId>jjwt-impl</artifactId>
+      <version>0.11.5</version>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.jsonwebtoken</groupId>
+      <artifactId>jjwt-jackson</artifactId>
+      <version>0.11.5</version>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-data-jpa</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.h2database</groupId>
+      <artifactId>h2</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.projectlombok</groupId>
+      <artifactId>lombok</artifactId>
+      <optional>true</optional>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+      </plugin>
+    </plugins>
+  </build>
+</project>
+
+# ==============================
+# src/main/resources/application.yml
+# ==============================
+# File: src/main/resources/application.yml
+server:
+  port: 8080
+spring:
+  datasource:
+    url: jdbc:h2:mem:authdb;DB_CLOSE_DELAY=-1;MODE=PostgreSQL
+    driverClassName: org.h2.Driver
+    username: sa
+    password: ""
+  jpa:
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        format_sql: true
+  h2:
+    console:
+      enabled: true
+      path: /h2
+security:
+  jwt:
+    secret: "change-me-to-a-strong-secret-key-change-me"
+    expiration-minutes: 60
+
+# ==============================
+# src/main/java/com/example/auth/Application.java
+# ==============================
+// File: src/main/java/com/example/auth/Application.java
+package com.example.auth;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class Application {
+  public static void main(String[] args) {
+    SpringApplication.run(Application.class, args);
+  }
+}
+
+# ==============================
+# src/main/java/com/example/auth/user/Role.java
+# ==============================
+// File: src/main/java/com/example/auth/user/Role.java
+package com.example.auth.user;
+
+public enum Role {
+  USER, ADMIN
+}
+
+# ==============================
+# src/main/java/com/example/auth/user/User.java
+# ==============================
+// File: src/main/java/com/example/auth/user/User.java
+package com.example.auth.user;
+
+import jakarta.persistence.*;
+import lombok.*;
+
+import java.time.Instant;
+
+@Entity
+@Table(name = "users")
+@Getter @Setter
+@NoArgsConstructor @AllArgsConstructor @Builder
+public class User {
+  @Id
+  @GeneratedValue(strategy = GenerationType.IDENTITY)
+  private Long id;
+
+  @Column(nullable = false, unique = true)
+  private String email;
+
+  @Column(nullable = false)
+  private String passwordHash;
+
+  @Enumerated(EnumType.STRING)
+  @Column(nullable = false)
+  private Role role = Role.USER;
+
+  @Column(nullable = false)
+  private Instant createdAt = Instant.now();
+}
+
+# ==============================
+# src/main/java/com/example/auth/user/UserRepository.java
+# ==============================
+// File: src/main/java/com/example/auth/user/UserRepository.java
+package com.example.auth.user;
+
+import org.springframework.data.jpa.repository.JpaRepository;
+
+import java.util.Optional;
+
+public interface UserRepository extends JpaRepository<User, Long> {
+  Optional<User> findByEmail(String email);
+  boolean existsByEmail(String email);
+}
+
+# ==============================
+# src/main/java/com/example/auth/security/JwtService.java
+# ==============================
+// File: src/main/java/com/example/auth/security/JwtService.java
+package com.example.auth.security;
+
+import io.jsonwebtoken.Claims;
+import io.jsonwebtoken.Jwts;
+import io.jsonwebtoken.SignatureAlgorithm;
+import io.jsonwebtoken.io.Decoders;
+import io.jsonwebtoken.security.Keys;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
+
+import java.security.Key;
+import java.time.Instant;
+import java.util.Date;
+import java.util.Map;
+
+@Service
+public class JwtService {
+  private final Key key;
+  private final long expirationMs;
+
+  public JwtService(
+    @Value("${security.jwt.secret}") String secret,
+    @Value("${security.jwt.expiration-minutes}") long expirationMinutes
+  ) {
+    this.key = Keys.hmacShaKeyFor(Decoders.BASE64.decode(java.util.Base64.getEncoder().encodeToString(secret.getBytes())));
+    this.expirationMs = expirationMinutes * 60 * 1000;
+  }
+
+  public String generateToken(String subject, Map<String, Object> claims) {
+    var now = new Date();
+    var expiry = new Date(now.getTime() + expirationMs);
+    return Jwts.builder()
+      .setClaims(claims)
+      .setSubject(subject)
+      .setIssuedAt(now)
+      .setExpiration(expiry)
+      .signWith(key, SignatureAlgorithm.HS256)
+      .compact();
+  }
+
+  public Claims parse(String token) {
+    return Jwts.parserBuilder().setSigningKey(key).build().parseClaimsJws(token).getBody();
+  }
+}
+
+# ==============================
+# src/main/java/com/example/auth/security/SecurityConfig.java
+# ==============================
+// File: src/main/java/com/example/auth/security/SecurityConfig.java
+package com.example.auth.security;
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
+import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.ProviderManager;
+import org.springframework.security.authentication.dao.DaoAuthenticationProvider;
+import org.springframework.security.config.Customizer;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+
+@Configuration
+@EnableMethodSecurity
+public class SecurityConfig {
+
+  @Bean
+  public PasswordEncoder passwordEncoder() { return new BCryptPasswordEncoder(); }
+
+  @Bean
+  public AuthenticationManager authenticationManager(UserDetailsService uds, PasswordEncoder encoder) {
+    DaoAuthenticationProvider provider = new DaoAuthenticationProvider();
+    provider.setUserDetailsService(uds);
+    provider.setPasswordEncoder(encoder);
+    return new ProviderManager(provider);
+  }
+
+  @Bean
+  public SecurityFilterChain filterChain(HttpSecurity http, JwtFilter jwtFilter) throws Exception {
+    http
+      .csrf(csrf -> csrf.disable())
+      .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+      .authorizeHttpRequests(auth -> auth
+        .requestMatchers(HttpMethod.POST, "/api/auth/register", "/api/auth/login").permitAll()
+        .requestMatchers("/h2/**").permitAll()
+        .anyRequest().authenticated()
+      )
+      .httpBasic(Customizer.withDefaults());
+
+    http.headers(headers -> headers.frameOptions(frame -> frame.disable())); // enable H2 console
+
+    http.addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class);
+
+    return http.build();
+  }
+}
+
+# ==============================
+# src/main/java/com/example/auth/security/JwtFilter.java
+# ==============================
+// File: src/main/java/com/example/auth/security/JwtFilter.java
+package com.example.auth.security;
+
+import io.jsonwebtoken.Claims;
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.web.authentication.WebAuthenticationDetailsSource;
+import org.springframework.stereotype.Component;
+import org.springframework.web.filter.OncePerRequestFilter;
+
+import java.io.IOException;
+
+@Component
+public class JwtFilter extends OncePerRequestFilter {
+  private final JwtService jwtService;
+  private final UserDetailsService userDetailsService;
+
+  public JwtFilter(JwtService jwtService, UserDetailsService uds) {
+    this.jwtService = jwtService;
+    this.userDetailsService = uds;
+  }
+
+  @Override
+  protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
+    throws ServletException, IOException {
+
+    final String authHeader = request.getHeader("Authorization");
+    if (authHeader == null || !authHeader.startsWith("Bearer ")) {
+      filterChain.doFilter(request, response);
+      return;
+    }
+
+    final String token = authHeader.substring(7);
+    try {
+      Claims claims = jwtService.parse(token);
+      String email = claims.getSubject();
+      if (email != null && SecurityContextHolder.getContext().getAuthentication() == null) {
+        UserDetails userDetails = userDetailsService.loadUserByUsername(email);
+        var authToken = new UsernamePasswordAuthenticationToken(userDetails, null, userDetails.getAuthorities());
+        authToken.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
+        SecurityContextHolder.getContext().setAuthentication(authToken);
+      }
+    } catch (Exception ignored) {}
+
+    filterChain.doFilter(request, response);
+  }
+}
+
+# ==============================
+# src/main/java/com/example/auth/security/CustomUserDetailsService.java
+# ==============================
+// File: src/main/java/com/example/auth/security/CustomUserDetailsService.java
+package com.example.auth.security;
+
+import com.example.auth.user.User;
+import com.example.auth.user.UserRepository;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.core.userdetails.UsernameNotFoundException;
+import org.springframework.stereotype.Service;
+
+import java.util.List;
+
+@Service
+public class CustomUserDetailsService implements UserDetailsService {
+  private final UserRepository repo;
+
+  public CustomUserDetailsService(UserRepository repo) { this.repo = repo; }
+
+  @Override
+  public UserDetails loadUserByUsername(String email) throws UsernameNotFoundException {
+    User user = repo.findByEmail(email).orElseThrow(() -> new UsernameNotFoundException("User not found"));
+    return new org.springframework.security.core.userdetails.User(
+      user.getEmail(),
+      user.getPasswordHash(),
+      List.of(new SimpleGrantedAuthority("ROLE_" + user.getRole().name()))
+    );
+  }
+}
+
+# ==============================
+# src/main/java/com/example/auth/dto/AuthDtos.java
+# ==============================
+// File: src/main/java/com/example/auth/dto/AuthDtos.java
+package com.example.auth.dto;
+
+import jakarta.validation.constraints.Email;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
+import lombok.*;
+
+@Getter @Setter @NoArgsConstructor @AllArgsConstructor
+public class RegisterRequest {
+  @Email @NotBlank
+  private String email;
+  @NotBlank @Size(min = 8, max = 100)
+  private String password;
+}
+
+@Getter @Setter @NoArgsConstructor @AllArgsConstructor
+class LoginRequest {
+  @Email @NotBlank
+  private String email;
+  @NotBlank
+  private String password;
+}
+
+@Getter @Setter @AllArgsConstructor
+class AuthResponse {
+  private String token;
+}
+
+# ==============================
+# src/main/java/com/example/auth/service/AuthService.java
+# ==============================
+// File: src/main/java/com/example/auth/service/AuthService.java
+package com.example.auth.service;
+
+import com.example.auth.dto.RegisterRequest;
+import com.example.auth.user.Role;
+import com.example.auth.user.User;
+import com.example.auth.user.UserRepository;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.stereotype.Service;
+
+@Service
+public class AuthService {
+  private final UserRepository repo;
+  private final PasswordEncoder encoder;
+
+  public AuthService(UserRepository repo, PasswordEncoder encoder) {
+    this.repo = repo;
+    this.encoder = encoder;
+  }
+
+  public User register(RegisterRequest req) {
+    String email = req.getEmail().trim().toLowerCase();
+    if (repo.existsByEmail(email)) {
+      throw new IllegalArgumentException("Email already in use");
+    }
+    User user = User.builder()
+      .email(email)
+      .passwordHash(encoder.encode(req.getPassword()))
+      .role(Role.USER)
+      .build();
+    return repo.save(user);
+  }
+}
+
+# ==============================
+# src/main/java/com/example/auth/controller/AuthController.java
+# ==============================
+// File: src/main/java/com/example/auth/controller/AuthController.java
+package com.example.auth.controller;
+
+import com.example.auth.dto.AuthResponse;
+import com.example.auth.dto.RegisterRequest;
+import com.example.auth.security.JwtService;
+import com.example.auth.user.User;
+import com.example.auth.user.UserRepository;
+import jakarta.validation.Valid;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.Map;
+
+@RestController
+@RequestMapping("/api/auth")
+public class AuthController {
+  private final AuthenticationManager authManager;
+  private final JwtService jwtService;
+  private final UserRepository userRepo;
+  private final com.example.auth.service.AuthService authService;
+
+  public AuthController(AuthenticationManager authManager, JwtService jwtService, UserRepository userRepo, com.example.auth.service.AuthService authService) {
+    this.authManager = authManager;
+    this.jwtService = jwtService;
+    this.userRepo = userRepo;
+    this.authService = authService;
+  }
+
+  @PostMapping("/register")
+  public ResponseEntity<?> register(@Valid @RequestBody RegisterRequest request) {
+    try {
+      User u = authService.register(request);
+      return ResponseEntity.ok(Map.of("id", u.getId(), "email", u.getEmail(), "role", u.getRole()));
+    } catch (IllegalArgumentException ex) {
+      return ResponseEntity.status(409).body(Map.of("error", ex.getMessage()));
+    }
+  }
+
+  @PostMapping("/login")
+  public ResponseEntity<?> login(@RequestBody Map<String, String> payload) {
+    String email = payload.getOrDefault("email", "").trim().toLowerCase();
+    String password = payload.getOrDefault("password", "");
+
+    Authentication authentication = authManager.authenticate(new UsernamePasswordAuthenticationToken(email, password));
+    SecurityContextHolder.getContext().setAuthentication(authentication);
+
+    var user = userRepo.findByEmail(email).orElseThrow();
+    String token = jwtService.generateToken(email, Map.of("role", user.getRole().name(), "uid", user.getId()));
+    return ResponseEntity.ok(new AuthResponse(token));
+  }
+}
+
+# ==============================
+# src/main/java/com/example/auth/controller/MeController.java
+# ==============================
+// File: src/main/java/com/example/auth/controller/MeController.java
+package com.example.auth.controller;
+
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.security.Principal;
+import java.util.Map;
+
+@RestController
+@RequestMapping("/api")
+public class MeController {
+
+  @GetMapping("/me")
+  public Map<String, Object> me(Principal principal) {
+    return Map.of("user", principal.getName());
+  }
+
+  @PreAuthorize("hasRole('ADMIN')")
+  @GetMapping("/admin")
+  public Map<String, Object> adminOnly(Principal principal) {
+    return Map.of("message", "Welcome, admin!", "user", principal.getName());
+  }
+
+  @PreAuthorize("hasAnyRole('USER','ADMIN')")
+  @GetMapping("/protected")
+  public Map<String, Object> protectedEndpoint(Principal principal) {
+    return Map.of("ok", true, "user", principal.getName());
+  }
+}
+
+# ==============================
+# src/main/resources/data.sql (optional seed admin)
+# ==============================
+-- File: src/main/resources/data.sql
+-- Create an admin user with password: admin1234 (bcrypt hash below)
+-- DO NOT use this in production. Generate your own.
+INSERT INTO users (email, password_hash, role, created_at) VALUES (
+  'admin@example.com',
+  '$2a$10$XJmS1xN8A9GgM6mI2Xk0zOuIYq5Qm9k3jv5Dk9Q4r2y6UuZlqY1kS',
+  'ADMIN',
+  CURRENT_TIMESTAMP
+);
+
+# ==============================
+# cURL examples
+# ==============================
+# Register
+# curl -X POST http://localhost:8080/api/auth/register \
+#   -H 'Content-Type: application/json' \
+#   -d '{"email":"user1@example.com","password":"secretpass"}'
+
+# Login
+# TOKEN=$(curl -s -X POST http://localhost:8080/api/auth/login \
+#   -H 'Content-Type: application/json' \
+#   -d '{"email":"user1@example.com","password":"secretpass"}' | jq -r .token)
+
+# Access protected
+# curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/protected
+
+# Admin-only (use admin@example.com / admin1234 or make your own)
+# ADMIN=$(curl -s -X POST http://localhost:8080/api/auth/login \
+#   -H 'Content-Type: application/json' \
+#   -d '{"email":"admin@example.com","password":"admin1234"}' | jq -r .token)
+# curl -H "Authorization: Bearer $ADMIN" http://localhost:8080/api/admin
+
+# ==============================
+# Notes
+# ==============================
+# • Passwords are hashed with BCrypt (Spring Security PasswordEncoder).
+# • JWT is stateless; no server-side session needed. If you want sessions instead,
+#   swap SecurityConfig to STATEFUL and remove JwtFilter, then rely on Spring Session.
+# • For production: move secret to env var, enable HTTPS, add refresh tokens, rate limiting.
