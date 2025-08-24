@@ -1,0 +1,476 @@
+# Spring Boot WebSocket Chat (Beginner-friendly, Java)
+
+This project shows a minimal, easy-to-understand real-time chat app using Spring Boot + WebSocket (STOMP over SockJS). It includes:
+- Simple account registration & login (token-based, in-memory token store for learning)
+- Public chat rooms and private messages
+- Real-time messaging with STOMP endpoints
+- Optional: message history persisted to H2
+- A very small static frontend (HTML + JS) that connects with SockJS + Stomp
+
+This is intentionally simple so beginners can read, run, and modify it.
+
+---
+# pom.xml
+
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.chatapp</groupId>
+  <artifactId>simple-chat</artifactId>
+  <version>0.0.1-SNAPSHOT</version>
+  <properties>
+    <java.version>17</java.version>
+    <spring.boot.version>3.3.2</spring.boot.version>
+  </properties>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-dependencies</artifactId>
+        <version>${spring.boot.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-websocket</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-data-jpa</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.h2database</groupId>
+      <artifactId>h2</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.projectlombok</groupId>
+      <artifactId>lombok</artifactId>
+      <optional>true</optional>
+    </dependency>
+  </dependencies>
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+      </plugin>
+    </plugins>
+  </build>
+</project>
+
+---
+# application.yml (src/main/resources/application.yml)
+
+server:
+  port: 8080
+spring:
+  datasource:
+    url: jdbc:h2:mem:chatdb;DB_CLOSE_DELAY=-1
+    driverClassName: org.h2.Driver
+    username: sa
+    password: ""
+  jpa:
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        format_sql: true
+  h2:
+    console:
+      enabled: true
+      path: /h2
+
+---
+# Main application (src/main/java/com/chatapp/ChatApplication.java)
+
+package com.chatapp;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class ChatApplication {
+  public static void main(String[] args) { SpringApplication.run(ChatApplication.class, args); }
+}
+
+---
+# Domain: User, ChatRoom, Message (src/main/java/com/chatapp/domain/...)
+
+// User.java
+package com.chatapp.domain;
+
+import jakarta.persistence.*;
+import lombok.*;
+import java.time.Instant;
+
+@Entity @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
+public class User {
+  @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+  private Long id;
+  @Column(unique = true, nullable = false)
+  private String username;
+  @Column(nullable = false)
+  private String passwordHash; // we'll store plaintext-friendly hash for demo (bcrypt recommended)
+  private Instant createdAt = Instant.now();
+}
+
+// ChatRoom.java
+package com.chatapp.domain;
+
+import jakarta.persistence.*;
+import lombok.*;
+
+@Entity @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
+public class ChatRoom {
+  @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+  private Long id;
+  @Column(nullable = false, unique = true)
+  private String name; // e.g. "general" or "support"
+}
+
+// Message.java
+package com.chatapp.domain;
+
+import jakarta.persistence.*;
+import lombok.*;
+import java.time.Instant;
+
+@Entity @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
+public class Message {
+  @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+  private Long id;
+  private String sender; // username
+  private String recipient; // room name or username (for private messages)
+  private String content;
+  private Instant sentAt = Instant.now();
+  private boolean privateMessage = false; // true if one-to-one
+}
+
+---
+# Repositories (src/main/java/com/chatapp/repo/...)
+
+package com.chatapp.repo;
+
+import com.chatapp.domain.User;
+import org.springframework.data.jpa.repository.JpaRepository;
+import java.util.Optional;
+
+public interface UserRepository extends JpaRepository<User, Long> { Optional<User> findByUsername(String username); boolean existsByUsername(String username); }
+
+package com.chatapp.repo;
+
+import com.chatapp.domain.ChatRoom;
+import org.springframework.data.jpa.repository.JpaRepository;
+import java.util.Optional;
+
+public interface ChatRoomRepository extends JpaRepository<ChatRoom, Long> { Optional<ChatRoom> findByName(String name); }
+
+package com.chatapp.repo;
+
+import com.chatapp.domain.Message;
+import org.springframework.data.jpa.repository.JpaRepository;
+import java.util.List;
+
+public interface MessageRepository extends JpaRepository<Message, Long> {
+  List<Message> findByRecipientAndPrivateMessage(String recipient, boolean privateMessage); // room messages when privateMessage=false
+  List<Message> findByRecipientOrSenderAndPrivateMessage(String recipient, String sender, boolean privateMessage); // helper for private
+}
+
+---
+# Simple Auth (in-memory tokens) and REST endpoints (src/main/java/com/chatapp/api/AuthController.java)
+
+package com.chatapp.api;
+
+import com.chatapp.domain.User;
+import com.chatapp.repo.UserRepository;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+
+@RestController
+@RequestMapping("/api/auth")
+public class AuthController {
+  private final UserRepository users;
+  // token -> username
+  private final Map<String, String> tokens = new ConcurrentHashMap<>();
+
+  public AuthController(UserRepository users) { this.users = users; }
+
+  record RegisterReq(@NotBlank String username, @NotBlank String password) {}
+  record LoginReq(@NotBlank String username, @NotBlank String password) {}
+  record TokenResp(String token) {}
+
+  @PostMapping("/register")
+  public ResponseEntity<?> register(@Valid @RequestBody RegisterReq r) {
+    if (users.existsByUsername(r.username())) return ResponseEntity.status(409).body(Map.of("error","username taken"));
+    User u = User.builder().username(r.username()).passwordHash(r.password()).build();
+    users.save(u);
+    return ResponseEntity.ok(Map.of("ok", true));
+  }
+
+  @PostMapping("/login")
+  public ResponseEntity<?> login(@Valid @RequestBody LoginReq r) {
+    var opt = users.findByUsername(r.username());
+    if (opt.isEmpty()) return ResponseEntity.status(401).body(Map.of("error","invalid"));
+    User u = opt.get();
+    if (!u.getPasswordHash().equals(r.password())) return ResponseEntity.status(401).body(Map.of("error","invalid"));
+    String token = UUID.randomUUID().toString();
+    tokens.put(token, u.getUsername());
+    return ResponseEntity.ok(new TokenResp(token));
+  }
+
+  // simple endpoint to lookup username by token
+  @GetMapping("/me")
+  public ResponseEntity<?> me(@RequestHeader("X-Auth-Token") String token) {
+    var name = tokens.get(token);
+    if (name == null) return ResponseEntity.status(401).body(Map.of("error","invalid token"));
+    return ResponseEntity.ok(Map.of("username", name));
+  }
+
+  // For simplicity expose token map (demo only)
+  @GetMapping("/tokens") public Map<String,String> allTokens(){ return tokens; }
+}
+
+---
+# WebSocket configuration (src/main/java/com/chatapp/config/WebSocketConfig.java)
+
+package com.chatapp.config;
+
+import org.springframework.context.annotation.Configuration;
+import org.springframework.messaging.simp.config.MessageBrokerRegistry;
+import org.springframework.web.socket.config.annotation.EnableWebSocketMessageBroker;
+import org.springframework.web.socket.config.annotation.StompEndpointRegistry;
+import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerConfigurer;
+
+@Configuration
+@EnableWebSocketMessageBroker
+public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
+  @Override
+  public void configureMessageBroker(MessageBrokerRegistry config) {
+    config.enableSimpleBroker("/topic", "/queue"); // /topic for rooms, /queue for private
+    config.setApplicationDestinationPrefixes("/app");
+  }
+
+  @Override
+  public void registerStompEndpoints(StompEndpointRegistry registry) {
+    registry.addEndpoint("/ws").setAllowedOriginPatterns("*").withSockJS();
+  }
+}
+
+---
+# Messaging controller (handles messages sent from clients) (src/main/java/com/chatapp/ws/ChatController.java)
+
+package com.chatapp.ws;
+
+import com.chatapp.domain.Message;
+import com.chatapp.repo.MessageRepository;
+import org.springframework.messaging.handler.annotation.MessageMapping;
+import org.springframework.messaging.handler.annotation.Payload;
+import org.springframework.messaging.handler.annotation.SendTo;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
+import org.springframework.stereotype.Controller;
+
+@Controller
+public class ChatController {
+  private final SimpMessagingTemplate template;
+  private final MessageRepository messages;
+
+  public ChatController(SimpMessagingTemplate template, MessageRepository messages) { this.template = template; this.messages = messages; }
+
+  // Send message to room: destination /app/room/{roomName}
+  @MessageMapping("/room/{roomName}")
+  public void roomMessage(@Payload Message msg) {
+    msg.setPrivateMessage(false);
+    messages.save(msg);
+    template.convertAndSend("/topic/room." + msg.getRecipient(), msg);
+  }
+
+  // Send private message: destination /app/private/{toUsername}
+  @MessageMapping("/private/{to}")
+  public void privateMessage(@Payload Message msg) {
+    msg.setPrivateMessage(true);
+    messages.save(msg);
+    // send to receiver's queue
+    template.convertAndSendToUser(msg.getRecipient(), "/queue/messages", msg);
+  }
+}
+
+---
+# Simple REST API for rooms & history (src/main/java/com/chatapp/api/ChatApi.java)
+
+package com.chatapp.api;
+
+import com.chatapp.domain.ChatRoom;
+import com.chatapp.domain.Message;
+import com.chatapp.repo.ChatRoomRepository;
+import com.chatapp.repo.MessageRepository;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
+
+@RestController
+@RequestMapping("/api/chat")
+public class ChatApi {
+  private final ChatRoomRepository rooms;
+  private final MessageRepository messages;
+  public ChatApi(ChatRoomRepository rooms, MessageRepository messages){ this.rooms = rooms; this.messages = messages; }
+
+  @GetMapping("/rooms") public List<ChatRoom> rooms(){ return rooms.findAll(); }
+  @PostMapping("/rooms") public ChatRoom create(@RequestBody ChatRoom r){ return rooms.save(r); }
+
+  @GetMapping("/rooms/{name}/history")
+  public List<Message> history(@PathVariable String name){ return messages.findByRecipientAndPrivateMessage(name, false); }
+}
+
+---
+# Simple frontend (src/main/resources/static/index.html)
+
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Simple Chat</title>
+  <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/stompjs@2.3.3/lib/stomp.min.js"></script>
+  <style>body{font-family:Arial;max-width:900px;margin:1rem auto;padding:1rem;}#messages{height:300px;overflow:auto;border:1px solid #ddd;padding:8px;}input,button,select{padding:8px;margin:4px 0;} .msg{padding:6px;border-bottom:1px solid #eee;}</style>
+</head>
+<body>
+<h2>Simple Chat (Beginner)</h2>
+<div>
+  <label>Username: <input id="username" /></label>
+  <label>Password: <input type="password" id="password" /></label>
+  <button id="btnRegister">Register</button>
+  <button id="btnLogin">Login</button>
+  <div id="tokenDiv" style="display:none">Token: <span id="token"></span></div>
+</div>
+<hr/>
+<div>
+  <label>Rooms: <select id="rooms"></select></label>
+  <button id="btnJoin">Load History</button>
+</div>
+<div id="messages"></div>
+<input id="messageInput" placeholder="Type message" style="width:70%" />
+<button id="sendBtn">Send to Room</button>
+<button id="sendPrivateBtn">Send Private (enter recipient below)</button>
+<input id="privateTo" placeholder="recipient username" />
+<hr/>
+<script>
+let token = null;
+let stompClient = null;
+let currentRoom = null;
+
+async function api(path, method='GET', body=null){
+  const headers = {};
+  if(token) headers['X-Auth-Token'] = token;
+  const res = await fetch('/api'+path, {method, headers, body: body ? JSON.stringify(body) : undefined});
+  return res.json();
+}
+
+document.getElementById('btnRegister').onclick = async ()=>{
+  const u = document.getElementById('username').value;
+  const p = document.getElementById('password').value;
+  const r = await api('/auth/register', 'POST', {username:u,password:p});
+  alert(JSON.stringify(r));
+}
+
+document.getElementById('btnLogin').onclick = async ()=>{
+  const u = document.getElementById('username').value;
+  const p = document.getElementById('password').value;
+  const r = await api('/auth/login','POST',{username:u,password:p});
+  if(r.token){ token = r.token; document.getElementById('token').innerText = token; document.getElementById('tokenDiv').style.display='block'; connectWs(); loadRooms(); }
+  else alert(JSON.stringify(r));
+}
+
+function connectWs(){
+  const socket = new SockJS('/ws');
+  stompClient = Stomp.over(socket);
+  stompClient.connect({}, function(frame){
+    console.log('connected', frame);
+    // Subscribe to personal queue for private messages
+    stompClient.subscribe('/user/queue/messages', function(msg){ showMessage(JSON.parse(msg.body)); });
+  });
+}
+
+async function loadRooms(){
+  const list = await api('/chat/rooms');
+  const sel = document.getElementById('rooms'); sel.innerHTML='';
+  list.forEach(r=>{ const o=document.createElement('option'); o.value=r.name; o.textContent=r.name; sel.appendChild(o); });
+}
+
+document.getElementById('btnJoin').onclick = async ()=>{
+  currentRoom = document.getElementById('rooms').value;
+  document.getElementById('messages').innerHTML='';
+  // Subscribe to room topic
+  stompClient.subscribe('/topic/room.'+currentRoom, function(m){ showMessage(JSON.parse(m.body)); });
+  // Load history
+  const hist = await api('/chat/rooms/'+currentRoom+'/history');
+  hist.forEach(showMessage);
+}
+
+function showMessage(m){
+  const d = document.createElement('div'); d.className='msg'; d.textContent = '['+m.sender+'] '+m.content; document.getElementById('messages').appendChild(d);
+}
+
+document.getElementById('sendBtn').onclick = ()=>{
+  const text = document.getElementById('messageInput').value;
+  if(!currentRoom) return alert('Join a room');
+  const msg = {sender: document.getElementById('username').value, recipient: currentRoom, content:text, privateMessage:false};
+  stompClient.send('/app/room/'+currentRoom, {}, JSON.stringify(msg));
+  document.getElementById('messageInput').value='';
+}
+
+document.getElementById('sendPrivateBtn').onclick = ()=>{
+  const to = document.getElementById('privateTo').value;
+  const text = document.getElementById('messageInput').value;
+  if(!to) return alert('Enter recipient');
+  const msg = {sender: document.getElementById('username').value, recipient: to, content:text, privateMessage:true};
+  stompClient.send('/app/private/'+to, {}, JSON.stringify(msg));
+  document.getElementById('messageInput').value='';
+}
+
+// create default rooms on load (only for demo)
+window.onload = async ()=>{
+  await api('/chat/rooms','POST',{name:'general'});
+  await api('/chat/rooms','POST',{name:'support'});
+  await loadRooms();
+}
+</script>
+</body>
+</html>
+
+---
+# How to run (beginner steps)
+1. Install Java 17+ and Maven.
+2. Create a folder and place files using the paths above (or copy the textdoc contents into files).
+3. Run: `mvn spring-boot:run` from project root.
+4. Open `http://localhost:8080` in two different browser windows (or devices) to test real-time messaging.
+5. Use Register → Login → Join room → Send messages.
+
+---
+# Notes & next steps (suggestions)
+- This demo uses a very simple token mechanism and stores passwords in plain text for clarity — **do not** use this in production. Replace with BCrypt + Spring Security for real apps.
+- You can add presence indicators by maintaining a map of connected users in a bean and updating it on connect/disconnect.
+- For file sharing, add endpoints to upload files and broadcast URLs via messages.
+- For notifications, use browser notifications or push.
+- To scale beyond a single server, replace the simple broker with a full-featured message broker (RabbitMQ) and use persistent storage for messages.
+
+If you want, I can now:
+- Convert the simple auth to Spring Security + JWT (more secure), or
+- Add user presence indicators, or
+- Add file upload for images in messages.
+
+Tell me which one and I’ll update the project accordingly.
