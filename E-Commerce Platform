@@ -1,0 +1,646 @@
+# Beginner-Friendly Java E‑Commerce (Spring Boot + Thymeleaf)
+# -----------------------------------------------------------
+# What you get
+# • Product listing with image URL, description, price
+# • Simple shopping cart stored in session (add/remove/update quantity)
+# • Checkout form (name, email, address) that creates an Order in DB
+# • Order confirmation page with order id (basic order tracking)
+# • Sort & filter (by name/price/category + search)
+# • H2 in-memory database + sample data (no external setup)
+# • Thymeleaf server-rendered pages (easy to understand for beginners)
+# Optional extensions at bottom: reviews, authentication, file uploads, etc.
+# -----------------------------------------------------------
+# How to run
+# 1) Ensure Java 17+ and Maven are installed
+# 2) Create a folder (e.g., mini-shop) and place these files with the same paths
+# 3) In that folder, run: mvn spring-boot:run
+# 4) Open http://localhost:8080
+# -----------------------------------------------------------
+
+# ==============================
+# pom.xml
+# ==============================
+<!-- File: pom.xml -->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.localshop</groupId>
+  <artifactId>mini-shop</artifactId>
+  <version>0.0.1-SNAPSHOT</version>
+  <name>mini-shop</name>
+  <description>Beginner-friendly e-commerce with Spring Boot + Thymeleaf</description>
+  <properties>
+    <java.version>17</java.version>
+    <spring.boot.version>3.3.2</spring.boot.version>
+  </properties>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-dependencies</artifactId>
+        <version>${spring.boot.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-thymeleaf</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-data-jpa</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-validation</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.h2database</groupId>
+      <artifactId>h2</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.projectlombok</groupId>
+      <artifactId>lombok</artifactId>
+      <optional>true</optional>
+    </dependency>
+  </dependencies>
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+      </plugin>
+    </plugins>
+  </build>
+</project>
+
+# ==============================
+# src/main/resources/application.yml
+# ==============================
+# File: src/main/resources/application.yml
+server:
+  port: 8080
+spring:
+  datasource:
+    url: jdbc:h2:mem:shopdb;DB_CLOSE_DELAY=-1
+    driverClassName: org.h2.Driver
+    username: sa
+    password: ""
+  jpa:
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        format_sql: true
+  thymeleaf:
+    cache: false
+  h2:
+    console:
+      enabled: true
+      path: /h2
+
+# ==============================
+# src/main/java/com/localshop/MiniShopApplication.java
+# ==============================
+// File: src/main/java/com/localshop/MiniShopApplication.java
+package com.localshop;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class MiniShopApplication {
+  public static void main(String[] args) {
+    SpringApplication.run(MiniShopApplication.class, args);
+  }
+}
+
+# ==============================
+# Domain: Product, Order, OrderItem
+# ==============================
+// File: src/main/java/com/localshop/product/Product.java
+package com.localshop.product;
+
+import jakarta.persistence.*;
+import jakarta.validation.constraints.*;
+import lombok.*;
+import java.math.BigDecimal;
+
+@Entity @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
+public class Product {
+  @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+  private Long id;
+
+  @NotBlank
+  private String name;
+
+  @NotBlank @Column(length = 2000)
+  private String description;
+
+  @NotBlank
+  private String category;
+
+  @NotNull @DecimalMin("0.0")
+  private BigDecimal price;
+
+  // For beginners we keep images as external URLs (e.g., https://...)
+  @NotBlank
+  private String imageUrl;
+}
+
+// File: src/main/java/com/localshop/product/ProductRepository.java
+package com.localshop.product;
+
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+public interface ProductRepository extends JpaRepository<Product, Long> {
+  Page<Product> findByNameContainingIgnoreCase(String q, Pageable pageable);
+  Page<Product> findByCategoryIgnoreCase(String category, Pageable pageable);
+}
+
+// File: src/main/java/com/localshop/order/Order.java
+package com.localshop.order;
+
+import jakarta.persistence.*;
+import jakarta.validation.constraints.*;
+import lombok.*;
+import java.math.BigDecimal;
+import java.time.Instant;
+import java.util.*;
+
+@Entity @Table(name = "orders")
+@Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
+public class Order {
+  @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+  private Long id;
+
+  @NotBlank private String customerName;
+  @Email @NotBlank private String email;
+  @NotBlank private String address;
+
+  @OneToMany(mappedBy = "order", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.EAGER)
+  private List<OrderItem> items = new ArrayList<>();
+
+  private BigDecimal total;
+
+  private Instant createdAt = Instant.now();
+
+  // super-simple status for beginner tracking
+  private String status = "RECEIVED"; // RECEIVED -> PROCESSING -> SHIPPED -> DELIVERED
+}
+
+// File: src/main/java/com/localshop/order/OrderItem.java
+package com.localshop.order;
+
+import jakarta.persistence.*;
+import lombok.*;
+import java.math.BigDecimal;
+
+@Entity @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
+public class OrderItem {
+  @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+  private Long id;
+
+  private Long productId;
+  private String productName;
+  private String imageUrl;
+  private int quantity;
+  private BigDecimal unitPrice;
+
+  @ManyToOne(fetch = FetchType.LAZY)
+  private Order order;
+}
+
+// File: src/main/java/com/localshop/order/OrderRepository.java
+package com.localshop.order;
+
+import org.springframework.data.jpa.repository.JpaRepository;
+
+public interface OrderRepository extends JpaRepository<Order, Long> {}
+
+# ==============================
+# Cart (session-scoped) + DTOs
+# ==============================
+// File: src/main/java/com/localshop/cart/Cart.java
+package com.localshop.cart;
+
+import com.localshop.product.Product;
+import lombok.*;
+import java.math.BigDecimal;
+import java.util.*;
+
+@Getter @Setter
+public class Cart {
+  private final Map<Long, CartItem> items = new LinkedHashMap<>();
+
+  public void add(Product p, int qty) {
+    CartItem existing = items.get(p.getId());
+    if (existing == null) items.put(p.getId(), new CartItem(p.getId(), p.getName(), p.getImageUrl(), qty, p.getPrice()));
+    else existing.setQuantity(existing.getQuantity() + qty);
+  }
+  public void update(Long productId, int qty) { if (items.containsKey(productId)) items.get(productId).setQuantity(qty); }
+  public void remove(Long productId) { items.remove(productId); }
+  public void clear() { items.clear(); }
+  public BigDecimal total() { return items.values().stream().map(CartItem::lineTotal).reduce(BigDecimal.ZERO, BigDecimal::add); }
+}
+
+// File: src/main/java/com/localshop/cart/CartItem.java
+package com.localshop.cart;
+
+import lombok.*;
+import java.math.BigDecimal;
+
+@Getter @Setter @AllArgsConstructor
+public class CartItem {
+  private Long productId;
+  private String name;
+  private String imageUrl;
+  private int quantity;
+  private BigDecimal unitPrice;
+  public BigDecimal lineTotal() { return unitPrice.multiply(BigDecimal.valueOf(quantity)); }
+}
+
+# ==============================
+# Controllers
+# ==============================
+// File: src/main/java/com/localshop/web/WebConfig.java
+package com.localshop.web;
+
+import com.localshop.cart.Cart;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.web.context.annotation.SessionScope;
+
+@Configuration
+public class WebConfig {
+  @Bean @SessionScope
+  public Cart cart() { return new Cart(); }
+}
+
+// File: src/main/java/com/localshop/web/HomeController.java
+package com.localshop.web;
+
+import com.localshop.cart.Cart;
+import com.localshop.product.Product;
+import com.localshop.product.ProductRepository;
+import jakarta.validation.Valid;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
+import org.springframework.stereotype.Controller;
+import org.springframework.ui.Model;
+import org.springframework.validation.BindingResult;
+import org.springframework.web.bind.annotation.*;
+
+@Controller
+public class HomeController {
+  private final ProductRepository products;
+  private final Cart cart;
+
+  public HomeController(ProductRepository products, Cart cart) { this.products = products; this.cart = cart; }
+
+  @GetMapping("/")
+  public String home(@RequestParam(defaultValue = "") String q,
+                     @RequestParam(defaultValue = "") String category,
+                     @RequestParam(defaultValue = "name") String sort,
+                     @RequestParam(defaultValue = "asc") String dir,
+                     @RequestParam(defaultValue = "0") int page,
+                     Model model) {
+    Sort s = Sort.by(dir.equalsIgnoreCase("desc") ? Sort.Direction.DESC : Sort.Direction.ASC, sort);
+    var pageable = PageRequest.of(page, 8, s);
+    Page<Product> result;
+    if (!q.isBlank()) result = products.findByNameContainingIgnoreCase(q, pageable);
+    else if (!category.isBlank()) result = products.findByCategoryIgnoreCase(category, pageable);
+    else result = products.findAll(pageable);
+
+    model.addAttribute("products", result);
+    model.addAttribute("cart", cart);
+    model.addAttribute("q", q);
+    model.addAttribute("category", category);
+    model.addAttribute("sort", sort);
+    model.addAttribute("dir", dir);
+    return "home";
+  }
+}
+
+// File: src/main/java/com/localshop/web/CartController.java
+package com.localshop.web;
+
+import com.localshop.cart.Cart;
+import com.localshop.product.ProductRepository;
+import org.springframework.stereotype.Controller;
+import org.springframework.ui.Model;
+import org.springframework.web.bind.annotation.*;
+
+@Controller
+@RequestMapping("/cart")
+public class CartController {
+  private final Cart cart;
+  private final ProductRepository products;
+  public CartController(Cart cart, ProductRepository products) { this.cart = cart; this.products = products; }
+
+  @PostMapping("/add/{id}")
+  public String add(@PathVariable Long id, @RequestParam(defaultValue = "1") int qty) {
+    var p = products.findById(id).orElseThrow();
+    cart.add(p, Math.max(qty, 1));
+    return "redirect:/";
+  }
+
+  @GetMapping
+  public String view(Model model) {
+    model.addAttribute("cart", cart);
+    return "cart";
+  }
+
+  @PostMapping("/update/{id}")
+  public String update(@PathVariable Long id, @RequestParam int qty) {
+    cart.update(id, Math.max(qty, 1));
+    return "redirect:/cart";
+  }
+
+  @PostMapping("/remove/{id}")
+  public String remove(@PathVariable Long id) { cart.remove(id); return "redirect:/cart"; }
+
+  @PostMapping("/clear")
+  public String clear() { cart.clear(); return "redirect:/cart"; }
+}
+
+// File: src/main/java/com/localshop/web/CheckoutController.java
+package com.localshop.web;
+
+import com.localshop.cart.Cart;
+import com.localshop.order.*;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.*;
+import lombok.*;
+import org.springframework.stereotype.Controller;
+import org.springframework.ui.Model;
+import org.springframework.validation.BindingResult;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.stream.Collectors;
+
+@Controller
+@RequestMapping("/checkout")
+public class CheckoutController {
+  private final Cart cart; private final OrderRepository orders;
+  public CheckoutController(Cart cart, OrderRepository orders) { this.cart = cart; this.orders = orders; }
+
+  @GetMapping
+  public String form(Model model) { model.addAttribute("cart", cart); model.addAttribute("form", new CheckoutForm()); return "checkout"; }
+
+  @PostMapping
+  public String submit(@Valid @ModelAttribute("form") CheckoutForm form, BindingResult br, Model model) {
+    if (cart.getItems().isEmpty()) br.reject("cart.empty", "Your cart is empty");
+    if (br.hasErrors()) { model.addAttribute("cart", cart); return "checkout"; }
+
+    var order = Order.builder()
+      .customerName(form.getName())
+      .email(form.getEmail())
+      .address(form.getAddress())
+      .total(cart.total())
+      .build();
+
+    var items = cart.getItems().values().stream().map(ci -> OrderItem.builder()
+      .productId(ci.getProductId()).productName(ci.getName()).imageUrl(ci.getImageUrl())
+      .quantity(ci.getQuantity()).unitPrice(ci.getUnitPrice()).order(order).build()).collect(Collectors.toList());
+
+    order.setItems(items);
+    orders.save(order);
+    cart.clear();
+    return "redirect:/order/" + order.getId();
+  }
+
+  @Getter @Setter
+  public static class CheckoutForm {
+    @NotBlank private String name;
+    @Email @NotBlank private String email;
+    @NotBlank private String address;
+  }
+}
+
+// File: src/main/java/com/localshop/web/OrderController.java
+package com.localshop.web;
+
+import com.localshop.order.OrderRepository;
+import org.springframework.stereotype.Controller;
+import org.springframework.ui.Model;
+import org.springframework.web.bind.annotation.*;
+
+@Controller
+@RequestMapping("/order")
+public class OrderController {
+  private final OrderRepository orders;
+  public OrderController(OrderRepository orders) { this.orders = orders; }
+
+  @GetMapping("/{id}")
+  public String view(@PathVariable Long id, Model model) {
+    var order = orders.findById(id).orElseThrow();
+    model.addAttribute("order", order);
+    return "order";
+  }
+}
+
+# ==============================
+# Templates (Thymeleaf)
+# ==============================
+# File: src/main/resources/templates/fragments.html
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+  <meta charset="UTF-8" />
+  <title th:replace="this :: title">Mini Shop</title>
+  <link rel="stylesheet" th:href="@{/styles.css}" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+</head>
+<body>
+<header class="container">
+  <h1><a th:href="@{/}">🛍️ Mini Shop</a></h1>
+  <nav>
+    <a th:href="@{/}">Products</a>
+    <a th:href="@{/cart}">Cart (<span th:text="${#numbers.formatDecimal(cart != null ? cart.items.size() : 0, 0, 0)}">0</span>)</a>
+  </nav>
+  <hr/>
+</header>
+<div class="container" th:fragment="content">
+  <!-- content goes here -->
+</div>
+<footer class="container"><hr/> <small>Local Store · Built with Spring Boot + Thymeleaf</small></footer>
+</body>
+</html>
+
+# File: src/main/resources/templates/home.html
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org" th:replace="fragments :: content">
+<body>
+<div>
+  <form method="get" class="row">
+    <input type="text" name="q" placeholder="Search products" th:value="${q}"/>
+    <select name="category">
+      <option value="" th:selected="${category == ''}">All categories</option>
+      <option>Bakery</option>
+      <option>Produce</option>
+      <option>Beverages</option>
+      <option>Snacks</option>
+    </select>
+    <select name="sort">
+      <option value="name" th:selected="${sort=='name'}">Name</option>
+      <option value="price" th:selected="${sort=='price'}">Price</option>
+    </select>
+    <select name="dir">
+      <option value="asc" th:selected="${dir=='asc'}">Asc</option>
+      <option value="desc" th:selected="${dir=='desc'}">Desc</option>
+    </select>
+    <button type="submit">Apply</button>
+  </form>
+
+  <div class="grid">
+    <div class="card" th:each="p : ${products}">
+      <img th:src="${p.imageUrl}" alt=""/>
+      <h3 th:text="${p.name}">Name</h3>
+      <p class="muted" th:text="${p.category}">Category</p>
+      <p th:text="${#numbers.formatDecimal(p.price, 1, 2)}">0.00</p>
+      <p class="desc" th:text="${#strings.abbreviate(p.description, 140)}"></p>
+      <form th:action="@{'/cart/add/' + ${p.id}}" method="post">
+        <input type="number" name="qty" min="1" value="1"/>
+        <button>Add to cart</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="pagination">
+    <a th:if="${products.hasPrevious()}" th:href="@{|/?page=${products.number-1}&q=${q}&category=${category}&sort=${sort}&dir=${dir}|}">Prev</a>
+    <span>Page <span th:text="${products.number+1}"></span> / <span th:text="${products.totalPages}"></span></span>
+    <a th:if="${products.hasNext()}" th:href="@{|/?page=${products.number+1}&q=${q}&category=${category}&sort=${sort}&dir=${dir}|}">Next</a>
+  </div>
+</div>
+</body>
+</html>
+
+# File: src/main/resources/templates/cart.html
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org" th:replace="fragments :: content">
+<body>
+<h2>Your Cart</h2>
+<div th:if="${cart.items.isEmpty()}">Cart is empty. <a th:href="@{/}">Browse products</a>.</div>
+<table th:if="${!cart.items.isEmpty()}">
+  <thead><tr><th>Item</th><th>Qty</th><th>Price</th><th>Total</th><th></th></tr></thead>
+  <tbody>
+  <tr th:each="ci : ${cart.items.values()}">
+    <td><img class="thumb" th:src="${ci.imageUrl}" alt=""/> <strong th:text="${ci.name}"></strong></td>
+    <td>
+      <form th:action="@{'/cart/update/' + ${ci.productId}}" method="post" class="inline">
+        <input type="number" name="qty" min="1" th:value="${ci.quantity}"/>
+        <button>Update</button>
+      </form>
+    </td>
+    <td th:text="${#numbers.formatDecimal(ci.unitPrice,1,2)}"></td>
+    <td th:text="${#numbers.formatDecimal(ci.lineTotal(),1,2)}"></td>
+    <td>
+      <form th:action="@{'/cart/remove/' + ${ci.productId}}" method="post" class="inline">
+        <button>Remove</button>
+      </form>
+    </td>
+  </tr>
+  </tbody>
+</table>
+<div th:if="${!cart.items.isEmpty()}" class="cart-actions">
+  <p><strong>Total:</strong> <span th:text="${#numbers.formatDecimal(cart.total(),1,2)}"></span></p>
+  <form th:action="@{/cart/clear}" method="post" class="inline"><button>Clear cart</button></form>
+  <a class="button" th:href="@{/checkout}">Checkout</a>
+</div>
+</body>
+</html>
+
+# File: src/main/resources/templates/checkout.html
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org" th:replace="fragments :: content">
+<body>
+<h2>Checkout</h2>
+<div th:if="${#fields.hasGlobalErrors()}" class="error" th:each="e : ${#fields.globalErrors()}" th:text="${e}"></div>
+<form method="post" th:object="${form}" class="checkout">
+  <label>Name <input th:field="*{name}"/></label>
+  <div class="error" th:if="${#fields.hasErrors('name')}" th:errors="*{name}"></div>
+  <label>Email <input th:field="*{email}"/></label>
+  <div class="error" th:if="${#fields.hasErrors('email')}" th:errors="*{email}"></div>
+  <label>Address <textarea th:field="*{address}"></textarea></label>
+  <div class="error" th:if="${#fields.hasErrors('address')}" th:errors="*{address}"></div>
+  <p><strong>Order Total:</strong> <span th:text="${#numbers.formatDecimal(cart.total(),1,2)}"></span></p>
+  <button type="submit">Place Order</button>
+</form>
+</body>
+</html>
+
+# File: src/main/resources/templates/order.html
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org" th:replace="fragments :: content">
+<body>
+<h2>Thank you! 🎉</h2>
+<p>Your order <strong>#<span th:text="${order.id}"></span></strong> is <strong th:text="${order.status}"></strong>.</p>
+<p>We sent a confirmation to <span th:text="${order.email}"></span>.</p>
+<p><a th:href="@{/}">Continue shopping</a></p>
+</body>
+</html>
+
+# ==============================
+# Static styles (simple, clean)
+# ==============================
+# File: src/main/resources/static/styles.css
+* { box-sizing: border-box; }
+body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; background: #fafafa; color: #222; }
+a { color: #0a6; text-decoration: none; }
+.container { max-width: 980px; margin: 0 auto; padding: 1rem; }
+.row { display: flex; gap: .5rem; margin-bottom: 1rem; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1rem; }
+.card { background: #fff; padding: 1rem; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,.05); display: flex; flex-direction: column; gap: .5rem; }
+.card img { width: 100%; height: 150px; object-fit: cover; border-radius: 8px; }
+.thumb { width: 40px; height: 40px; object-fit: cover; border-radius: 6px; margin-right: .5rem; vertical-align: middle; }
+.inline { display: inline-block; }
+button, .button { background: #0a6; color: #fff; border: 0; padding: .5rem .8rem; border-radius: 8px; cursor: pointer; }
+button:hover, .button:hover { background: #097; }
+.muted { color: #666; font-size: .9rem; }
+.desc { color: #333; font-size: .9rem; min-height: 2.6em; }
+.error { color: #b00; margin: .25rem 0; }
+.checkout label { display:block; margin:.5rem 0; }
+.checkout input, .checkout textarea, input[type="text"], input[type="number"], select { width:100%; padding:.5rem; border:1px solid #ddd; border-radius:8px; }
+.cart-actions { margin-top: 1rem; display: flex; align-items: center; gap: 1rem; }
+.pagination { display:flex; gap:1rem; align-items:center; justify-content:center; padding:1rem 0; }
+
+# ==============================
+# Sample data (auto-loads)
+# ==============================
+# File: src/main/resources/data.sql
+INSERT INTO PRODUCT (name, description, category, price, image_url) VALUES
+('Sourdough Bread','Freshly baked sourdough loaf from our local bakery.','Bakery', 4.99,'https://images.unsplash.com/photo-1549931319-a545dcf3bc73?q=80&w=800'),
+('Organic Apples','Crisp, sweet, and locally sourced apples.','Produce', 2.49,'https://images.unsplash.com/photo-1560807707-8cc77767d783?q=80&w=800'),
+('Cold Brew Coffee','Smooth, refreshing cold brew in a recyclable bottle.','Beverages', 3.25,'https://images.unsplash.com/photo-1517701604599-bb29b565090c?q=80&w=800'),
+('Potato Chips','Sea-salt kettle cooked chips for the perfect crunch.','Snacks', 1.75,'https://images.unsplash.com/photo-1604908176997-4316234f9118?q=80&w=800'),
+('Muffins','Blueberry muffins baked every morning.','Bakery', 2.25,'https://images.unsplash.com/photo-1509440159596-0249088772ff?q=80&w=800'),
+('Orange Juice','100% pure squeezed orange juice.','Beverages', 3.99,'https://images.unsplash.com/photo-1546483875-ad9014c88eba?q=80&w=800');
+
+# ==============================
+# Beginner-friendly notes
+# ==============================
+# • This is a single Spring Boot app (backend + frontend with Thymeleaf).
+# • We keep images as URLs to avoid file upload complexity.
+# • The cart is a Java object kept in the session (simple for one-user browser sessions).
+# • H2 database keeps data in memory; every run starts fresh (good for learning).
+# • To persist across restarts, switch to a file DB or Postgres later.
+#
+# Optional next steps (when you’re ready):
+# 1) User accounts + login (Spring Security) to save addresses and order history.
+# 2) Reviews table (product_id, rating 1–5, comment) and display average rating.
+# 3) Real images (upload to /static or S3) and admin dashboard to add products.
+# 4) Payment integration (Stripe test mode) and order emails.
+# 5) Order status management page (update RECEIVED → DELIVERED).
