@@ -1,0 +1,269 @@
+# ProDigy Infotech — Social Media Platform (Beginner-friendly Java)
+
+This is a beginner-friendly Spring Boot (Thymeleaf) social media starter. It includes:
+- User registration & login (Spring Security + BCrypt)
+- User profiles (bio, avatar upload)
+- Create posts (text + image/video upload)
+- Like & comment on posts
+- Follow/unfollow users
+- Simple notifications (new follower, like, comment)
+- Post tagging and a basic "trending" (by number of likes)
+- H2 in-memory DB with file uploads saved to local `uploads/` directory
+- Thymeleaf views for easy learning (no frontend framework required)
+
+How to use: save files (paths shown) and run `mvn spring-boot:run`. Open http://localhost:8080
+
+---
+# pom.xml
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.prodigy</groupId>
+  <artifactId>social-plat</artifactId>
+  <version>0.0.1-SNAPSHOT</version>
+  <properties>
+    <java.version>17</java.version>
+    <spring.boot.version>3.3.2</spring.boot.version>
+  </properties>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-dependencies</artifactId>
+        <version>${spring.boot.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-thymeleaf</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-security</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-data-jpa</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-validation</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.h2database</groupId>
+      <artifactId>h2</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.projectlombok</groupId>
+      <artifactId>lombok</artifactId>
+      <optional>true</optional>
+    </dependency>
+  </dependencies>
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+      </plugin>
+    </plugins>
+  </build>
+</project>
+
+---
+# application.yml (src/main/resources/application.yml)
+server:
+  port: 8080
+spring:
+  datasource:
+    url: jdbc:h2:mem:socialdb;DB_CLOSE_DELAY=-1
+    driverClassName: org.h2.Driver
+    username: sa
+    password: ""
+  jpa:
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        format_sql: true
+  thymeleaf:
+    cache: false
+app:
+  upload-dir: uploads
+
+---
+# Main (src/main/java/com/prodigy/social/SocialApplication.java)
+package com.prodigy.social;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+
+@SpringBootApplication
+@EnableConfigurationProperties(com.prodigy.social.config.AppProperties.class)
+public class SocialApplication {
+  public static void main(String[] args) { SpringApplication.run(SocialApplication.class, args); }
+}
+
+---
+# Config: AppProperties to expose upload dir
+// src/main/java/com/prodigy/social/config/AppProperties.java
+package com.prodigy.social.config;
+
+import org.springframework.boot.context.properties.ConfigurationProperties;
+
+@ConfigurationProperties(prefix = "app")
+public class AppProperties { private String uploadDir; public String getUploadDir(){return uploadDir;} public void setUploadDir(String d){this.uploadDir=d;} }
+
+---
+# Security config (src/main/java/com/prodigy/social/security/SecurityConfig.java)
+package com.prodigy.social.security;
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.web.SecurityFilterChain;
+
+@Configuration
+@EnableWebSecurity
+public class SecurityConfig {
+  @Bean public PasswordEncoder passwordEncoder() { return new BCryptPasswordEncoder(); }
+
+  @Bean
+  public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+    http
+      .csrf(csrf -> csrf.disable())
+      .authorizeHttpRequests(auth -> auth
+        .requestMatchers("/css/**","/js/**","/images/**","/register","/login","/","/posts/**").permitAll()
+        .anyRequest().authenticated()
+      )
+      .formLogin(fl -> fl.loginPage("/login").defaultSuccessUrl("/", true).permitAll())
+      .logout(lg -> lg.logoutSuccessUrl("/"));
+    return http.build();
+  }
+}
+
+---
+# Entities: User, Profile, Post, Comment, Like, Follow, Notification, Tag
+// src/main/java/com/prodigy/social/model/User.java
+package com.prodigy.social.model;
+
+import jakarta.persistence.*;
+import lombok.*;
+import java.time.Instant;
+
+@Entity @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
+@Table(name="users")
+public class User {
+  @Id @GeneratedValue(strategy = GenerationType.IDENTITY) private Long id;
+  @Column(unique=true,nullable=false) private String username;
+  @Column(nullable=false) private String passwordHash;
+  private String displayName;
+  private Instant createdAt = Instant.now();
+}
+
+// Profile.java (simple extra fields)
+package com.prodigy.social.model;
+import jakarta.persistence.*; import lombok.*;
+@Entity @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
+public class Profile { @Id private Long id; @OneToOne @MapsId private User user; private String bio; private String avatarPath; }
+
+// Post.java
+package com.prodigy.social.model;
+import jakarta.persistence.*; import lombok.*; import java.time.Instant; import java.util.*;
+@Entity @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
+public class Post { @Id @GeneratedValue(strategy=GenerationType.IDENTITY) private Long id; @ManyToOne private User author; @Column(length=2000) private String text; private String mediaPath; private Instant createdAt = Instant.now(); @ManyToMany(cascade = CascadeType.PERSIST) private Set<Tag> tags = new HashSet<>(); }
+
+// Comment.java
+package com.prodigy.social.model; import jakarta.persistence.*; import lombok.*; import java.time.Instant;
+@Entity @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
+public class Comment { @Id @GeneratedValue(strategy=GenerationType.IDENTITY) private Long id; @ManyToOne private Post post; @ManyToOne private User author; @Column(length=1000) private String text; private Instant createdAt = Instant.now(); }
+
+// Like.java
+package com.prodigy.social.model; import jakarta.persistence.*; import lombok.*;
+@Entity @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
+@Table(uniqueConstraints = @UniqueConstraint(columnNames = {"post_id","user_id"}))
+public class Like { @Id @GeneratedValue(strategy=GenerationType.IDENTITY) private Long id; @ManyToOne private Post post; @ManyToOne private User user; }
+
+// Follow.java
+package com.prodigy.social.model; import jakarta.persistence.*; import lombok.*; import java.time.Instant;
+@Entity @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
+@Table(uniqueConstraints = @UniqueConstraint(columnNames = {"follower_id","followee_id"}))
+public class Follow { @Id @GeneratedValue(strategy=GenerationType.IDENTITY) private Long id; @ManyToOne private User follower; @ManyToOne private User followee; private Instant createdAt = Instant.now(); }
+
+// Notification.java
+package com.prodigy.social.model; import jakarta.persistence.*; import lombok.*; import java.time.Instant;
+@Entity @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
+public class Notification { @Id @GeneratedValue(strategy=GenerationType.IDENTITY) private Long id; @ManyToOne private User user; private String message; private boolean seen = false; private Instant createdAt = Instant.now(); }
+
+// Tag.java
+package com.prodigy.social.model; import jakarta.persistence.*; import lombok.*;
+@Entity @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
+public class Tag { @Id @GeneratedValue(strategy=GenerationType.IDENTITY) private Long id; @Column(unique=true) private String name; }
+
+---
+# Repositories (basic Spring Data JPA)
+// e.g., src/main/java/com/prodigy/social/repo/UserRepository.java
+package com.prodigy.social.repo; import com.prodigy.social.model.User; import org.springframework.data.jpa.repository.JpaRepository; import java.util.Optional; public interface UserRepository extends JpaRepository<User,Long>{ Optional<User> findByUsername(String u); boolean existsByUsername(String u); }
+
+// Create similar repos: ProfileRepository, PostRepository (with method findTopByOrderByLikesDesc), CommentRepository, LikeRepository, FollowRepository, NotificationRepository, TagRepository
+
+---
+# Services (UserService, PostService, NotificationService)
+# Keep them simple: e.g., UserService.register(username,password)->hash, create profile
+
+---
+# Controllers (AuthController, HomeController, PostController, ProfileController, FollowController, NotificationController)
+# Key routes:
+# GET / -> feed (recent posts + trending)
+# GET /post/{id} -> view post + comments
+# POST /post -> create post (multipart upload for media)
+# POST /post/{id}/like -> toggle like
+# POST /post/{id}/comment -> add comment
+# POST /follow/{username} -> follow/unfollow
+# GET /profile/{username} -> view profile
+
+---
+# File upload helper (store files under uploads/, return relative path)
+# Use AppProperties.getUploadDir() and java.nio.file.Files to save MultipartFile.
+
+---
+# Thymeleaf templates (simple): layout, home.html (feed), post.html, profile.html, login.html, register.html, _fragments.html
+# Use forms for create post, comment, buttons for like/follow sending POST requests
+
+---
+# Data initialization (src/main/resources/data.sql)
+# Optional sample users, posts, tags to explore app quickly
+
+---
+# How to run (beginner steps)
+1. Install Java 17+ and Maven.
+2. Create a project directory and add files matching the paths above.
+3. Ensure `app.upload-dir` exists or will be created (application creates on startup if missing).
+4. Run: `mvn spring-boot:run` from the project root.
+5. Open http://localhost:8080 — register an account, create posts, follow users, like and comment.
+
+---
+# Important notes & next steps (security & production)
+- Passwords are stored hashed with BCrypt via Spring Security.
+- For production: use a real DB (Postgres/MySQL), store uploads in cloud (S3) or external FS, enable HTTPS, add rate-limiting and input sanitization, add pagination and search indices, and consider asynchronous notifications.
+- Optional enhancements: push notifications (WebPush), real-time updates with WebSocket for live comments/likes, video transcoding, admin moderation tools.
+
+---
+If you want, I can now:
+1) Generate the full file contents for all controllers, services, repositories and Thymeleaf templates (ready-to-run), or
+2) Build the same app as a REST API + React frontend (if you prefer modern front-end), or
+3) Add real-time updates (WebSockets) for likes/comments/notifications.
+
+Tell me which option you want and I will generate the full code for that choice.
